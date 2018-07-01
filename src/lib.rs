@@ -5,7 +5,7 @@ use mio::event::Evented;
 use mio::unix::EventedFd;
 use mio::{Poll, PollOpt, Ready, Token};
 use std::io::{Error, Read, Result};
-use std::os::unix::io::{RawFd, IntoRawFd, AsRawFd, FromRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
 use libc::socket;
 use libc::{AF_PACKET, ETH_P_ALL, SOCK_RAW};
@@ -45,25 +45,24 @@ impl RawPacketStream {
     }
 }
 
+fn read_fd(fd: RawFd, buf: &mut [u8]) -> Result<usize> {
+    let rv = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+    if rv < 0 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(rv as usize)
+}
+
 impl Read for RawPacketStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let rv = unsafe { libc::read(self.0, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        if rv < 0 {
-            return Err(Error::last_os_error());
-        }
-
-        Ok(rv as usize)
+        read_fd(self.0, buf)
     }
 }
 
 impl<'a> Read for &'a RawPacketStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let rv = unsafe { libc::read(self.0, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        if rv < 0 {
-            return Err(Error::last_os_error());
-        }
-
-        Ok(rv as usize)
+        read_fd(self.0, buf)
     }
 }
 
@@ -84,7 +83,6 @@ impl FromRawFd for RawPacketStream {
         RawPacketStream(fd)
     }
 }
-
 
 // tests require CAP_NET_RAW capabilities
 #[cfg(test)]
