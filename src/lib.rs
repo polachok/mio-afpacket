@@ -5,12 +5,13 @@ use mio::event::Evented;
 use mio::unix::EventedFd;
 use mio::{Poll, PollOpt, Ready, Token};
 use std::io::{Error, Read, Result};
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{RawFd, IntoRawFd, AsRawFd, FromRawFd};
 
 use libc::socket;
 use libc::{AF_PACKET, ETH_P_ALL, SOCK_RAW};
 
 /// Packet sockets are used to receive or send raw packets at OSI 2 level.
+#[derive(Debug)]
 pub struct RawPacketStream(RawFd);
 
 impl Evented for RawPacketStream {
@@ -55,6 +56,25 @@ impl Read for RawPacketStream {
     }
 }
 
+impl IntoRawFd for RawPacketStream {
+    fn into_raw_fd(self) -> RawFd {
+        self.0
+    }
+}
+
+impl AsRawFd for RawPacketStream {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0
+    }
+}
+
+impl FromRawFd for RawPacketStream {
+    unsafe fn from_raw_fd(fd: RawFd) -> RawPacketStream {
+        RawPacketStream(fd)
+    }
+}
+
+
 // tests require CAP_NET_RAW capabilities
 #[cfg(test)]
 mod tests {
@@ -86,5 +106,11 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn it_debugs() {
+        let raw = RawPacketStream::new().unwrap();
+        println!("{:?}", raw);
     }
 }
