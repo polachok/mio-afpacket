@@ -56,6 +56,17 @@ impl Read for RawPacketStream {
     }
 }
 
+impl<'a> Read for &'a RawPacketStream {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let rv = unsafe { libc::read(self.0, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if rv < 0 {
+            return Err(Error::last_os_error());
+        }
+
+        Ok(rv as usize)
+    }
+}
+
 impl IntoRawFd for RawPacketStream {
     fn into_raw_fd(self) -> RawFd {
         self.0
