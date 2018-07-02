@@ -7,7 +7,7 @@ use mio::{Poll, PollOpt, Ready, Token};
 use std::io::{Error, Read, Result};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
-use libc::socket;
+use libc::{sockaddr_ll, sockaddr_storage, socket};
 use libc::{AF_PACKET, ETH_P_ALL, SOCK_RAW};
 
 /// Packet sockets are used to receive or send raw packets at OSI 2 level.
@@ -42,6 +42,24 @@ impl RawPacketStream {
             return Err(Error::last_os_error());
         }
         Ok(RawPacketStream(fd as RawFd))
+    }
+
+    /// Bind socket to an interface (by index).
+    pub fn bind(&mut self, ifindex: i32) -> Result<()> {
+        unsafe {
+            let mut ss: sockaddr_storage = std::mem::zeroed();
+            let sll: *mut sockaddr_ll = std::mem::transmute(&mut ss);
+            (*sll).sll_family = AF_PACKET as u16;
+            (*sll).sll_protocol = (ETH_P_ALL as u16).to_be();
+            (*sll).sll_ifindex = ifindex;
+
+            let sa = (&ss as *const libc::sockaddr_storage) as *const libc::sockaddr;
+            let res = libc::bind(self.0, sa, std::mem::size_of::<sockaddr_ll>() as u32);
+            if res == -1 {
+                return Err(Error::last_os_error());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -100,6 +118,31 @@ mod tests {
         use std::io::Read;
 
         let mut raw = RawPacketStream::new().unwrap();
+        let token = Token(0);
+        let poll = Poll::new().unwrap();
+        poll.register(&raw, token, Ready::readable(), PollOpt::edge())
+            .unwrap();
+        let mut events = Events::with_capacity(1024);
+        loop {
+            poll.poll(&mut events, None).unwrap();
+
+            for _event in &events {
+                let mut buf = [0; 1024];
+                if let Ok(len) = raw.read(&mut buf) {
+                    println!("pkt: {:02x?}", &buf[..len]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bind_works() {
+        use mio::*;
+        use std::io::Read;
+
+        let mut raw = RawPacketStream::new().unwrap();
+        raw.bind(1).unwrap();
+
         let token = Token(0);
         let poll = Poll::new().unwrap();
         poll.register(&raw, token, Ready::readable(), PollOpt::edge())
