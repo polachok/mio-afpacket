@@ -4,7 +4,7 @@ extern crate mio;
 use mio::event::Evented;
 use mio::unix::EventedFd;
 use mio::{Poll, PollOpt, Ready, Token};
-use std::io::{Error, Read, Result};
+use std::io::{Error, ErrorKind, Read, Result};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
 use libc::{sockaddr_ll, sockaddr_storage, socket};
@@ -44,8 +44,21 @@ impl RawPacketStream {
         Ok(RawPacketStream(fd as RawFd))
     }
 
-    /// Bind socket to an interface (by index).
-    pub fn bind(&mut self, ifindex: i32) -> Result<()> {
+    /// Bind socket to an interface (by name).
+    pub fn bind(&mut self, name: &str) -> Result<()> {
+        if name.len() > libc::IFNAMSIZ {
+            return Err(ErrorKind::InvalidInput.into());
+        }
+        let mut buf = [0u8; libc::IFNAMSIZ];
+        buf[..name.len()].copy_from_slice(name.as_bytes());
+        let idx = unsafe { libc::if_nametoindex(buf.as_ptr() as *const libc::c_char) };
+        if idx == 0 {
+            return Err(Error::last_os_error());
+        }
+        self.bind_by_index(idx as i32)
+    }
+
+    fn bind_by_index(&mut self, ifindex: i32) -> Result<()> {
         unsafe {
             let mut ss: sockaddr_storage = std::mem::zeroed();
             let sll: *mut sockaddr_ll = std::mem::transmute(&mut ss);
@@ -141,7 +154,7 @@ mod tests {
         use std::io::Read;
 
         let mut raw = RawPacketStream::new().unwrap();
-        raw.bind(1).unwrap();
+        raw.bind("lo").unwrap();
 
         let token = Token(0);
         let poll = Poll::new().unwrap();
