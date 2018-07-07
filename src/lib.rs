@@ -4,7 +4,7 @@ extern crate mio;
 use mio::event::Evented;
 use mio::unix::EventedFd;
 use mio::{Poll, PollOpt, Ready, Token};
-use std::io::{Error, ErrorKind, Read, Result};
+use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
 use libc::{sockaddr_ll, sockaddr_storage, socket};
@@ -97,6 +97,35 @@ impl<'a> Read for &'a RawPacketStream {
     }
 }
 
+fn write_fd(fd: RawFd, buf: &[u8]) -> Result<usize> {
+    let rv = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
+    if rv < 0 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(rv as usize)
+}
+
+impl Write for RawPacketStream {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        write_fd(self.0, buf)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> Write for &'a RawPacketStream {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        write_fd(self.0, buf)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
 impl IntoRawFd for RawPacketStream {
     fn into_raw_fd(self) -> RawFd {
         self.0
@@ -116,66 +145,188 @@ impl FromRawFd for RawPacketStream {
 }
 
 // tests require CAP_NET_RAW capabilities
+// tests must be executed sequentially
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
     use RawPacketStream;
+
+    const MESSAGE: &[u8] = b"hello world\n";
 
     #[test]
     fn it_works() {
         RawPacketStream::new().unwrap();
     }
 
-    #[test]
-    fn it_receives_something() {
+    fn execute_test(test: impl Test) {
+        use mio::net::*;
         use mio::*;
-        use std::io::Read;
+
+        const TCP_SERVER: Token = Token(0);
+        const TCP_CLIENT: Token = Token(1);
+        const RAW: Token = Token(2);
+
+        const CONNECTION_ID_START: usize = 128;
+
+        let mut id = CONNECTION_ID_START;
+
+        let poll = Poll::new().unwrap();
+        let mut events = Events::with_capacity(1024);
+        let mut connections = HashMap::new();
+
+        let tcp_server = TcpListener::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
+        let server_addr = tcp_server.local_addr().unwrap();
+
+        poll.register(&tcp_server, TCP_SERVER, Ready::readable(), PollOpt::edge())
+            .unwrap();
+
+        let tcp_client = TcpStream::connect(&server_addr).unwrap();
+        poll.register(&tcp_client, TCP_CLIENT, Ready::readable(), PollOpt::edge())
+            .unwrap();
 
         let mut raw = RawPacketStream::new().unwrap();
-        let token = Token(0);
-        let poll = Poll::new().unwrap();
-        poll.register(&raw, token, Ready::readable(), PollOpt::edge())
-            .unwrap();
-        let mut events = Events::with_capacity(1024);
+        test.setup(&mut raw);
+        poll.register(
+            &raw,
+            RAW,
+            Ready::readable() | Ready::writable(),
+            PollOpt::edge(),
+        ).unwrap();
+
         loop {
             poll.poll(&mut events, None).unwrap();
 
-            for _event in &events {
-                let mut buf = [0; 1024];
-                if let Ok(len) = raw.read(&mut buf) {
-                    println!("pkt: {:02x?}", &buf[..len]);
+            for event in &events {
+                match event.token() {
+                    TCP_SERVER => {
+                        println!("accepting conn");
+                        let (conn, _) = tcp_server.accept().unwrap();
+                        let token = Token(id);
+                        poll.register(&conn, token, Ready::writable(), PollOpt::edge())
+                            .unwrap();
+                        connections.insert(token, conn);
+                        id += 1;
+                    }
+                    TCP_CLIENT => {
+                        println!("connected");
+                    }
+                    RAW => {
+                        if event.readiness().is_readable() {
+                            if test.read(&mut raw) {
+                                return;
+                            }
+                        }
+                        if event.readiness().is_writable() {
+                            test.write(&mut raw);
+                        }
+                    }
+                    token => {
+                        println!("writing");
+                        let mut conn = connections.get(&token).unwrap();
+                        conn.write(MESSAGE).unwrap();
+                        conn.flush().unwrap();
+                    }
                 }
             }
         }
     }
 
-    #[test]
-    fn bind_works() {
-        use mio::*;
-        use std::io::Read;
+    trait Test {
+        fn setup(&self, _raw: &mut RawPacketStream) {}
+        // return true on success
+        fn read(&self, _raw: &mut RawPacketStream) -> bool;
+        fn write(&self, _raw: &mut RawPacketStream) {}
+    }
 
-        let mut raw = RawPacketStream::new().unwrap();
-        raw.bind("lo").unwrap();
+    // helper method to extract data from raw packet
+    fn parse_packet(bytes: &[u8]) -> Option<&[u8]> {
+        // skip mac
+        let bytes = &bytes[12..];
+        // check ethertype (ip)
+        if bytes[0] != 0x8 || bytes[1] != 0 {
+            return None;
+        }
+        let bytes = &bytes[2..];
+        // check ip version
+        if bytes[0] >> 4 != 4 {
+            return None;
+        }
+        // get ip header length
+        let ip_header_len = 4 * (bytes[0] & 0xf) as usize;
+        // skip ip header
+        let bytes = &bytes[ip_header_len..];
+        // get tcp header length
+        let tcp_header_len = 4 * (bytes[12] >> 4) as usize;
+        let bytes = &bytes[tcp_header_len..];
+        Some(bytes)
+    }
 
-        let token = Token(0);
-        let poll = Poll::new().unwrap();
-        poll.register(&raw, token, Ready::readable(), PollOpt::edge())
-            .unwrap();
-        let mut events = Events::with_capacity(1024);
-        loop {
-            poll.poll(&mut events, None).unwrap();
-
-            for _event in &events {
-                let mut buf = [0; 1024];
-                if let Ok(len) = raw.read(&mut buf) {
-                    println!("pkt: {:02x?}", &buf[..len]);
+    fn read_hello_world(raw: &mut RawPacketStream) -> bool {
+        let mut buf = [0; 1024];
+        if let Ok(len) = raw.read(&mut buf) {
+            if let Some(parsed) = parse_packet(&buf[..len]) {
+                if parsed == MESSAGE {
+                    println!("received msg!");
+                    return true;
                 }
             }
         }
+        false
     }
 
     #[test]
-    fn it_debugs() {
-        let raw = RawPacketStream::new().unwrap();
-        println!("{:?}", raw);
+    fn basic_receive() {
+        struct Basic;
+        impl Test for Basic {
+            fn read(&self, raw: &mut RawPacketStream) -> bool {
+                read_hello_world(raw)
+            }
+        };
+
+        impl Test {}
+        execute_test(Basic)
+    }
+
+    #[test]
+    fn bind_and_receive() {
+        struct Bind;
+        impl Test for Bind {
+            fn setup(&self, raw: &mut RawPacketStream) {
+                raw.bind("lo").unwrap();
+            }
+            fn read(&self, raw: &mut RawPacketStream) -> bool {
+                read_hello_world(raw)
+            }
+        }
+        execute_test(Bind);
+    }
+
+    #[test]
+    fn write_and_read() {
+        struct ReadWriteEther;
+        const SRC_MAC: &[u8] = &[0xd, 0xe, 0xa, 0xd, 0xb, 0xe];
+
+        impl Test for ReadWriteEther {
+            fn setup(&self, raw: &mut RawPacketStream) {
+                raw.bind("lo").unwrap();
+            }
+            fn read(&self, raw: &mut RawPacketStream) -> bool {
+                let mut buf = [0; 1024];
+                if let Ok(len) = raw.read(&mut buf) {
+                    println!("pkt: {:02x?}", &buf[..len]);
+                    if &buf[6..12] == SRC_MAC {
+                        return true;
+                    }
+                }
+                false
+            }
+            fn write(&self, raw: &mut RawPacketStream) {
+                let mut buf = vec![0; 32];
+                buf[6..12].clone_from_slice(SRC_MAC);
+                raw.write(&buf).unwrap();
+            }
+        }
+        execute_test(ReadWriteEther);
     }
 }
