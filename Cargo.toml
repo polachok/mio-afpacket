@@ -8,6 +8,7 @@ readme = "README.md"
 homepage = "https://github.com/polachok/mio-afpacket"
 repository = "https://github.com/polachok/mio-afpacket"
 keywords = ["mio", "async", "raw", "socket"]
+categories = ["network-programming","os"]
 
 [dependencies]
 mio = "0.6"
