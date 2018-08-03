@@ -9,4 +9,4 @@ repository = "https://github.com/polachok/mio-afpacket"
 
 [dependencies]
 mio = "0.6"
-libc = "0.2"
+libc = { git = "https://github.com/rust-lang/libc", branch = "master" }
