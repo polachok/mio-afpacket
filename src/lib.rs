@@ -190,8 +190,7 @@ mod tests {
     #[test]
     fn promisc_mode() {
         let mut rp = RawPacketStream::new().unwrap();
-        rp.set_promisc("docker0", true).unwrap();
-        loop {}
+        rp.set_promisc("lo", true).unwrap();
     }
 
     fn execute_test(test: impl Test) {
