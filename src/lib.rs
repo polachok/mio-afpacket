@@ -7,8 +7,9 @@ use mio::{Poll, PollOpt, Ready, Token};
 use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
-use libc::{sockaddr_ll, sockaddr_storage, socket};
-use libc::{AF_PACKET, ETH_P_ALL, SOCK_RAW};
+use libc::{sockaddr_ll, sockaddr_storage, socket, packet_mreq, setsockopt};
+use libc::{AF_PACKET, ETH_P_ALL, SOCK_RAW, SOL_PACKET, PACKET_MR_PROMISC,
+        PACKET_ADD_MEMBERSHIP, PACKET_DROP_MEMBERSHIP};
 
 /// Packet sockets are used to receive or send raw packets at OSI 2 level.
 #[derive(Debug)]
@@ -46,16 +47,8 @@ impl RawPacketStream {
 
     /// Bind socket to an interface (by name).
     pub fn bind(&mut self, name: &str) -> Result<()> {
-        if name.len() > libc::IFNAMSIZ {
-            return Err(ErrorKind::InvalidInput.into());
-        }
-        let mut buf = [0u8; libc::IFNAMSIZ];
-        buf[..name.len()].copy_from_slice(name.as_bytes());
-        let idx = unsafe { libc::if_nametoindex(buf.as_ptr() as *const libc::c_char) };
-        if idx == 0 {
-            return Err(Error::last_os_error());
-        }
-        self.bind_by_index(idx as i32)
+        let idx = index_by_name(name)?;
+        self.bind_by_index(idx)
     }
 
     fn bind_by_index(&mut self, ifindex: i32) -> Result<()> {
@@ -74,6 +67,41 @@ impl RawPacketStream {
         }
         Ok(())
     }
+
+    fn set_promisc(&mut self, name: &str, state: bool) -> Result<()> {
+        let packet_membership = if state {
+            PACKET_ADD_MEMBERSHIP
+        } else {
+            PACKET_DROP_MEMBERSHIP
+        };
+
+        let idx = index_by_name(name)?;
+
+        unsafe {
+            let mut mreq: packet_mreq = std::mem::zeroed();
+
+            mreq.mr_ifindex = idx;
+            mreq.mr_type = PACKET_MR_PROMISC as u16;
+
+            setsockopt(self.0, SOL_PACKET, packet_membership, (&mreq as *const packet_mreq) as *const libc::c_void, std::mem::size_of::<packet_mreq>() as u32);
+        }
+
+        Ok(())
+    }
+}
+
+fn index_by_name(name: &str) -> Result<i32> {
+    if name.len() > libc::IFNAMSIZ {
+        return Err(ErrorKind::InvalidInput.into());
+    }
+    let mut buf = [0u8; libc::IFNAMSIZ];
+        buf[..name.len()].copy_from_slice(name.as_bytes());
+    let idx = unsafe { libc::if_nametoindex(buf.as_ptr() as *const libc::c_char) };
+    if idx == 0 {
+        return Err(Error::last_os_error());
+    }
+
+    Ok(idx as i32)
 }
 
 fn read_fd(fd: RawFd, buf: &mut [u8]) -> Result<usize> {
@@ -157,6 +185,12 @@ mod tests {
     #[test]
     fn it_works() {
         RawPacketStream::new().unwrap();
+    }
+
+    #[test]
+    fn promisc_mode() {
+        let mut rp = RawPacketStream::new().unwrap();
+        rp.set_promisc("lo", true).unwrap();
     }
 
     fn execute_test(test: impl Test) {
