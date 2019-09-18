@@ -25,14 +25,14 @@ impl Evented for RawPacketStream {
     }
 
     fn deregister(&self, poll: &Poll) -> Result<()> {
-        poll.deregister(self)
+        poll.deregister(&EventedFd(&self.0))
     }
 }
 
 impl RawPacketStream {
     /// Create new raw packet stream binding to all interfaces
     pub fn new() -> Result<Self> {
-        let fd = unsafe { socket(AF_PACKET, SOCK_RAW, (ETH_P_ALL as u16).to_be() as i32) };
+        let fd = unsafe { socket(AF_PACKET, SOCK_RAW, i32::from((ETH_P_ALL as u16).to_be())) };
         if fd == -1 {
             return Err(Error::last_os_error());
         }
@@ -54,7 +54,7 @@ impl RawPacketStream {
     fn bind_by_index(&mut self, ifindex: i32) -> Result<()> {
         unsafe {
             let mut ss: sockaddr_storage = std::mem::zeroed();
-            let sll: *mut sockaddr_ll = std::mem::transmute(&mut ss);
+            let sll: *mut sockaddr_ll = &mut ss as *mut sockaddr_storage as *mut sockaddr_ll;
             (*sll).sll_family = AF_PACKET as u16;
             (*sll).sll_protocol = (ETH_P_ALL as u16).to_be();
             (*sll).sll_ifindex = ifindex;
@@ -68,7 +68,7 @@ impl RawPacketStream {
         Ok(())
     }
 
-    fn set_promisc(&mut self, name: &str, state: bool) -> Result<()> {
+    pub fn set_promisc(&mut self, name: &str, state: bool) -> Result<()> {
         let packet_membership = if state {
             PACKET_ADD_MEMBERSHIP
         } else {
@@ -178,7 +178,7 @@ impl FromRawFd for RawPacketStream {
 mod tests {
     use std::collections::HashMap;
     use std::io::{Read, Write};
-    use RawPacketStream;
+    use super::RawPacketStream;
 
     const MESSAGE: &[u8] = b"hello world\n";
 

@@ -1,6 +1,6 @@
 [package]
 name = "mio-afpacket"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Alexander Polakov <plhk@sdf.org>"]
 description = "Raw packet sockets (AF_PACKET) support for mio"
 license = "MIT"
@@ -9,6 +9,7 @@ homepage = "https://github.com/polachok/mio-afpacket"
 repository = "https://github.com/polachok/mio-afpacket"
 keywords = ["mio", "async", "raw", "socket"]
 categories = ["network-programming","os"]
+edition = "2018"
 
 [dependencies]
 mio = "0.6"
