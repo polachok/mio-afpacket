@@ -1,9 +1,9 @@
 extern crate libc;
 extern crate mio;
 
-use mio::event::Evented;
-use mio::unix::EventedFd;
-use mio::{Poll, PollOpt, Ready, Token};
+use mio::event::Source;
+use mio::unix::SourceFd;
+use mio::{Interest, Registry, Token};
 use std::io::{Error, ErrorKind, Read, Result, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
@@ -15,17 +15,17 @@ use libc::{AF_PACKET, ETH_P_ALL, SOCK_RAW, SOL_PACKET, PACKET_MR_PROMISC,
 #[derive(Debug)]
 pub struct RawPacketStream(RawFd);
 
-impl Evented for RawPacketStream {
-    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        poll.register(&EventedFd(&self.0), token, interest, opts)
+impl Source for RawPacketStream {
+    fn register(&mut self, registry: &Registry, token: Token, interest: Interest) -> Result<()> {
+        registry.register(&mut SourceFd(&self.0), token, interest)
     }
 
-    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        poll.reregister(&EventedFd(&self.0), token, interest, opts)
+    fn reregister(&mut self, registry: &Registry, token: Token, interest: Interest) -> Result<()> {
+        registry.reregister(&mut SourceFd(&self.0), token, interest)
     }
 
-    fn deregister(&self, poll: &Poll) -> Result<()> {
-        poll.deregister(&EventedFd(&self.0))
+    fn deregister(&mut self, registry: &Registry) -> Result<()> {
+        registry.deregister(&mut SourceFd(&self.0))
     }
 }
 
@@ -205,27 +205,26 @@ mod tests {
 
         let mut id = CONNECTION_ID_START;
 
-        let poll = Poll::new().unwrap();
+        let mut poll = Poll::new().unwrap();
         let mut events = Events::with_capacity(1024);
         let mut connections = HashMap::new();
 
-        let tcp_server = TcpListener::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
+        let mut tcp_server = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let server_addr = tcp_server.local_addr().unwrap();
 
-        poll.register(&tcp_server, TCP_SERVER, Ready::readable(), PollOpt::edge())
+        poll.registry().register(&mut tcp_server, TCP_SERVER, Interest::READABLE)
             .unwrap();
 
-        let tcp_client = TcpStream::connect(&server_addr).unwrap();
-        poll.register(&tcp_client, TCP_CLIENT, Ready::readable(), PollOpt::edge())
+        let mut tcp_client = TcpStream::connect(server_addr).unwrap();
+        poll.registry().register(&mut tcp_client, TCP_CLIENT, Interest::READABLE)
             .unwrap();
 
         let mut raw = RawPacketStream::new().unwrap();
         test.setup(&mut raw);
-        poll.register(
-            &raw,
+        poll.registry().register(
+            &mut raw,
             RAW,
-            Ready::readable() | Ready::writable(),
-            PollOpt::edge(),
+            Interest::READABLE | Interest::WRITABLE,
         ).unwrap();
 
         loop {
@@ -235,9 +234,9 @@ mod tests {
                 match event.token() {
                     TCP_SERVER => {
                         println!("accepting conn");
-                        let (conn, _) = tcp_server.accept().unwrap();
+                        let (mut conn, _) = tcp_server.accept().unwrap();
                         let token = Token(id);
-                        poll.register(&conn, token, Ready::writable(), PollOpt::edge())
+                        poll.registry().register(&mut conn, token, Interest::WRITABLE)
                             .unwrap();
                         connections.insert(token, conn);
                         id += 1;
@@ -246,12 +245,12 @@ mod tests {
                         println!("connected");
                     }
                     RAW => {
-                        if event.readiness().is_readable() {
+                        if event.is_readable() {
                             if test.read(&mut raw) {
                                 return;
                             }
                         }
-                        if event.readiness().is_writable() {
+                        if event.is_writable() {
                             test.write(&mut raw);
                         }
                     }
@@ -316,9 +315,9 @@ mod tests {
             fn read(&self, raw: &mut RawPacketStream) -> bool {
                 read_hello_world(raw)
             }
-        };
+        }
 
-        impl Test {}
+        impl dyn Test {}
         execute_test(Basic)
     }
 

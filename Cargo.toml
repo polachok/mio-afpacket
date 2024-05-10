@@ -12,5 +12,5 @@ categories = ["network-programming","os"]
 edition = "2018"
 
 [dependencies]
-mio = "0.6"
-libc = { git = "https://github.com/rust-lang/libc", branch = "master" }
+mio = { version = "0.8", features = ["os-poll", "os-ext", "net"] }
+libc = { git = "https://github.com/rust-lang/libc", branch = "main" }
